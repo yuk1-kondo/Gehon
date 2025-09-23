@@ -1,0 +1,16 @@
+Dockerfile
+.dockerignore
+
+# Git files
+.git
+.gitignore
+
+# Project local files
+.env.local
+README.md
+
+# Next.js build artifacts
+.next
+
+# Node.js dependency directory
+node_modules

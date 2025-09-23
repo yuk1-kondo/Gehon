@@ -1,0 +1,35 @@
+steps:
+# 1. Build the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', '$_GCR_HOSTNAME/$PROJECT_ID/gehon-web/gehon-web:latest', '.']
+
+# 2. Push the container image to Artifact Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', '$_GCR_HOSTNAME/$PROJECT_ID/gehon-web/gehon-web:latest']
+
+# 3. Deploy container image to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+    - 'run'
+    - 'deploy'
+    - 'gehon-web' # The name of the Cloud Run service
+    - '--image=$_GCR_HOSTNAME/$PROJECT_ID/gehon-web/gehon-web:latest'
+    - '--region=$_REGION'
+    - '--platform=managed'
+    - '--memory=2Gi'
+    - '--timeout=360s'
+    - '--allow-unauthenticated'
+    - '--set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest'
+    - '--set-env-vars=GEHON_STORY_MODEL=gemini-2.5-flash,GEHON_ILLUSTRATION_MODEL=imagen-3.0-fast-generate-001,GEHON_IMAGEN_LOCATION=us-central1,GEHON_IMAGE_BUCKET=$_GEHON_IMAGE_BUCKET,GEHON_IMAGE_PRIMARY=preview,GEHON_PREVIEW_MODEL=gemini-2.5-flash-image-preview'
+
+# Define substitutions
+substitutions:
+  _GCR_HOSTNAME: asia-northeast1-docker.pkg.dev
+  _REGION: asia-northeast1
+  # Set your default image bucket name for production deploys
+  _GEHON_IMAGE_BUCKET: gehon-web-images
+
+# Specify the image to be pushed
+images:
+- '$_GCR_HOSTNAME/$PROJECT_ID/gehon-web/gehon-web:latest'
