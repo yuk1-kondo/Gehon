@@ -11,6 +11,7 @@ interface Page {
   promptFull?: string;
   engine?: 'preview' | 'gemini' | 'vertex' | 'fallback';
   leftImageDesc?: string;
+  audioDataUrl?: string;
 }
 
 // Define the structure of the error object
@@ -43,6 +44,9 @@ export default function Home() {
   const [customStory, setCustomStory] = useState<string>('');
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [generating, setGenerating] = useState<boolean>(false);
+  const [honorific, setHonorific] = useState<'kun' | 'chan' | 'none'>('none');
+  const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
+  const [heroDataUrl, setHeroDataUrl] = useState<string | null>(null);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -50,7 +54,7 @@ export default function Home() {
     setPages([]);
     setError(null);
 
-    const formData = new FormData(event.currentTarget);
+  const formData = new FormData(event.currentTarget);
 
     if (selectedStoryId === 'custom') {
       const trimmedStory = customStory.trim();
@@ -67,7 +71,8 @@ export default function Home() {
     formData.set('storyId', selectedStoryId);
 
     try {
-      const response = await fetch('/api/gehon?textOnly=1', {
+      const query = new URLSearchParams({ textOnly: '1', ...(ttsEnabled ? { tts: '1' } : {}) });
+      const response = await fetch(`/api/gehon?${query.toString()}` , {
         method: 'POST',
         body: formData,
       });
@@ -112,6 +117,20 @@ export default function Home() {
           <div className="mb-4"><label htmlFor="ageHint" className="block text-gray-700 font-bold mb-2">年齢 (3-9歳)</label><select id="ageHint" name="ageHint" required className="w-full px-3 py-2 border rounded-lg"><option value="3">3歳</option><option value="4">4歳</option><option value="5">5歳</option><option value="6">6歳</option><option value="7">7歳</option><option value="8">8歳</option><option value="9">9歳</option></select></div>
           <div className="mb-4"><label htmlFor="traits_raw" className="block text-gray-700 font-bold mb-2">性格・特徴</label><input type="text" id="traits_raw" name="traits_raw" placeholder="例：元気で、お絵描きが好き" required className="w-full px-3 py-2 border rounded-lg" /></div>
           <div className="mb-4">
+            <label htmlFor="honorific" className="block text-gray-700 font-bold mb-2">呼び方（敬称）</label>
+            <select
+              id="honorific"
+              name="honorific"
+              className="w-full px-3 py-2 border rounded-lg"
+              value={honorific}
+              onChange={(e) => setHonorific(e.target.value as 'kun' | 'chan' | 'none')}
+            >
+              <option value="none">なし（呼び捨て）</option>
+              <option value="kun">くん</option>
+              <option value="chan">ちゃん</option>
+            </select>
+          </div>
+          <div className="mb-4">
             <label htmlFor="storyId" className="block text-gray-700 font-bold mb-2">ストーリー</label>
             <select
               id="storyId"
@@ -152,7 +171,42 @@ export default function Home() {
               <p className="text-xs text-gray-500 mt-1">絵本にしたいテーマやあらすじを自由に書いてください。</p>
             </div>
           )}
-          <div className="mb-6"><label htmlFor="photo" className="block text-gray-700 font-bold mb-2">写真 (任意)</label><input type="file" id="photo" name="photo" accept="image/*" className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/><p className="text-xs text-gray-500 mt-1">顔写真を使うと、主人公のイラストがより似ます。(このバージョンでは未対応)</p></div>
+          <div className="mb-4">
+            <label htmlFor="heroImage" className="block text-gray-700 font-bold mb-2">主人公の写真（任意）</label>
+            <input
+              type="file"
+              id="heroImage"
+              name="heroImage"
+              accept="image/*"
+              className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) { setHeroDataUrl(null); return; }
+                // FileReader で data URL を取得
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const result = reader.result;
+                  if (typeof result === 'string') {
+                    setHeroDataUrl(result);
+                  }
+                };
+                reader.onerror = () => setHeroDataUrl(null);
+                reader.readAsDataURL(f);
+              }}
+            />
+            <p className="text-xs text-gray-500 mt-1">顔写真を使うと、1ページ目の絵柄の初期基準として参照します（手描き風で生成されます）。</p>
+          </div>
+          <div className="mb-6 flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="tts"
+              name="tts"
+              checked={ttsEnabled}
+              onChange={(e) => setTtsEnabled(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <label htmlFor="tts" className="text-gray-700">読み上げ音声も生成（POST時）</label>
+          </div>
           
           <button type="submit" disabled={loading} className="w-full bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg disabled:bg-gray-400">
             {loading ? '生成中...' : '絵本を生成'}
@@ -186,7 +240,15 @@ export default function Home() {
                 )}
               </div>
               <div className="p-4 flex items-center">
-                <p className="text-gray-800 text-lg leading-relaxed">{pages[currentIndex].text}</p>
+                <div className="w-full">
+                  <p className="text-gray-800 text-lg leading-relaxed whitespace-pre-wrap">{pages[currentIndex].text}</p>
+                  {pages[currentIndex]?.audioDataUrl && (
+                    <div className="mt-3">
+                      <audio controls src={pages[currentIndex].audioDataUrl} className="w-full" />
+                      <div className="text-xs text-gray-500 mt-1">このページの読み上げ音声</div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex justify-between items-center p-4 border-t">
@@ -212,6 +274,8 @@ export default function Home() {
                         traitsRaw: (document.getElementById('traits_raw') as HTMLInputElement)?.value || '',
                         leftImageDesc: pages[currentIndex].leftImageDesc || '',
                         previousDataUrl,
+                        heroDataUrl, // 前参照がなければ初期参照として活用
+                        honorific,
                         // 任意: 前ページのプロンプトも参考として送る（サーバー側で未使用でも無害）
                         previousPrompt: currentIndex > 0 ? (pages[currentIndex - 1]?.promptFull || '') : '',
                       };
@@ -278,6 +342,8 @@ export default function Home() {
                         traitsRaw: (document.getElementById('traits_raw') as HTMLInputElement)?.value || '',
                         leftImageDesc: pages[nextIndex].leftImageDesc || '',
                         previousDataUrl,
+                        heroDataUrl,
+                        honorific,
                         previousPrompt,
                       };
                       const res = await fetch('/api/gehon', {

@@ -17,6 +17,7 @@ interface PageResult {
   promptFull?: string;
   engine?: EngineName | "fallback";
   leftImageDesc?: string; // textOnly モード用
+  audioDataUrl?: string; // tts=1 のときに各ページの音声を付与
 }
 
 interface StoryDefinition {
@@ -78,6 +79,8 @@ const GEMINI_ENDPOINT = (model: string) =>
 // Gemini Images API はモデルを URL ではなくボディで指定する "imagegeneration:generate" エンドポイントを使用
 const GEMINI_IMAGES_ENDPOINT =
   `https://generativelanguage.googleapis.com/v1beta/models/imagegeneration:generate`;
+// Google Cloud Text-to-Speech REST API
+const TTS_ENDPOINT = `https://texttospeech.googleapis.com/v1/text:synthesize`;
 
 const METADATA_TOKEN_URL =
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
@@ -106,6 +109,18 @@ const generateSvgPlaceholder = (text: string) => {
     </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+};
+
+// File -> data URL 変換（Next.js Route Handler の File を想定）
+const fileToDataUrl = async (f: File | null | undefined): Promise<string | null> => {
+  if (!f) return null;
+  try {
+    const buf = Buffer.from(await f.arrayBuffer());
+    const mime = f.type || "application/octet-stream";
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
 };
 
 // 画像の inlineData/inline_data を抽出（Gemini generateContent 応答）
@@ -164,7 +179,7 @@ let decodeJpeg: ((buf: Buffer) => { width: number; height: number; data: Uint8Ar
 
 try {
   // 可能なら動的 import（ビルド時に存在しない場合でも実行時に解決されればOK）
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
   const pngjs = require("pngjs");
   decodePng = (buf: Buffer) => {
     const PNG = pngjs.PNG;
@@ -174,7 +189,7 @@ try {
 } catch {}
 
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
   const jpeg = require("jpeg-js");
   decodeJpeg = (buf: Buffer) => {
     const out = jpeg.decode(buf, { useTArray: true, maxMemoryUsageInMB: 32 });
@@ -277,7 +292,7 @@ const ART_DIRECTION = {
 const buildIllustrationPrompt = (
   storyTitle: string,
   pageDescription: string,
-  childName: string,
+  childNameDisplay: string,
   ageHint: string,
   traitsRaw: string,
 ) => {
@@ -292,9 +307,9 @@ const buildIllustrationPrompt = (
     `スタイル: ${ART_DIRECTION.styleTitle}。${styleText}。 children's book watercolor illustration, hand-drawn, soft brush.\n` +
     `和色パレット: ${paletteText} を基調。\n` +
     `画面構成: ${compText}。背景はやや抽象化し、塗りのにじみを活かす。\n` +
-    `主人公: 「${childName}」。年齢目安: ${ageHint}歳。性格・特徴: ${traitsRaw}。` +
+  `主人公: 「${childNameDisplay}」。年齢目安: ${ageHint}歳。性格・特徴: ${traitsRaw}。` +
     ` 毎ページで同一人物として描写し、髪型・服装・体型・配色を一貫させる。\n` +
-    `前提: 主人公は人間の子ども「${childName}」。動物を主役にしない（動物は脇役にとどめる）。\n` +
+  `前提: 主人公は人間の子ども「${childNameDisplay}」。動物を主役にしない（動物は脇役にとどめる）。\n` +
     `物語の題材: 「${storyTitle}」の日本の昔話風解釈。\n` +
     `ページの内容指示: ${pageDescription}。\n` +
     `質感: 和紙の紙地に水彩で淡く着彩。手描きの筆致。描き込みは控えめ。\n` +
@@ -462,6 +477,50 @@ const fetchAccessToken = async () => {
   );
 };
 
+// TTS 生成（ja-JP）。成功時 MP3 data URL を返す
+const synthesizeTts = async (text: string): Promise<string | null> => {
+  try {
+    const accessToken = await fetchAccessToken();
+    const voice = process.env.GEHON_TTS_VOICE || "ja-JP-Neural2-C";
+    const speakingRate = Number(process.env.GEHON_TTS_RATE || 1.0);
+    const pitch = Number(process.env.GEHON_TTS_PITCH || 0.0);
+    const reqBody = {
+      input: { text },
+      voice: { languageCode: "ja-JP", name: voice },
+      audioConfig: { audioEncoding: "MP3", speakingRate, pitch },
+    } as const;
+    const resp = await fetch(TTS_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(reqBody),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      console.warn("TTS 呼び出し失敗:", resp.status, t);
+      return null;
+    }
+    const data = await resp.json();
+    const audioB64 = data?.audioContent;
+    if (!audioB64) return null;
+    return `data:audio/mpeg;base64,${audioB64}`;
+  } catch (e) {
+    console.warn("TTS 生成中にエラー:", e);
+    return null;
+  }
+};
+
+// 呼称整形: name + (くん/ちゃん/なし)
+type Honorific = "kun" | "chan" | "none";
+const displayNameWithHonorific = (name: string, honorific: Honorific): string => {
+  if (!name) return name;
+  if (honorific === "kun") return `${name}くん`;
+  if (honorific === "chan") return `${name}ちゃん`;
+  return name;
+};
+
 // ページ比率は絵本らしさを優先して全ページ 3:4 に統一
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const aspectRatioForPage = (_idx: number): "1:1" | "3:4" => "3:4";
@@ -526,7 +585,7 @@ const sanitizeImageDesc = (s: string) => {
 };
 
 // 物語本文のサニタイズ（ブランド/英数字/現代ガジェット語を排除）
-const sanitizeRightTextJa = (s: string, childName: string, traitsRaw: string) => {
+const sanitizeRightTextJa = (s: string, childNameDisplay: string, traitsRaw: string) => {
   let t = s;
   // 連続英数字・型番風を除去
   t = t.replace(/[A-Za-z0-9#_\-]{2,}/g, "");
@@ -537,8 +596,8 @@ const sanitizeRightTextJa = (s: string, childName: string, traitsRaw: string) =>
   // 空白整理
   t = t.replace(/\s+/g, " ").replace(/\s*、\s*/g, "、").trim();
   // 子どもの名前が一度も登場しない場合は軽く追記
-  if (childName && !t.includes(childName)) {
-    t += ` ${childName}は${traitsRaw || "やさしい心"}の持ち主です。`;
+  if (childNameDisplay && !t.includes(childNameDisplay)) {
+    t += ` ${childNameDisplay}は${traitsRaw || "やさしい心"}の持ち主です。`;
   }
   return t;
 };
@@ -785,6 +844,9 @@ export async function POST(request: Request) {
     }
   const formData = await request.formData();
     const childName = formData.get("name") as string;
+    const honorificRaw = (formData.get("honorific") as string | null)?.toString() || "none";
+    const honorific = (['kun','chan','none'].includes(honorificRaw) ? honorificRaw : 'none') as 'kun'|'chan'|'none';
+    const childNameDisplay = displayNameWithHonorific(childName, honorific);
     const ageHint = formData.get("ageHint") as string;
     const traitsRaw = formData.get("traits_raw") as string;
     const storyId = formData.get("storyId") as string;
@@ -851,7 +913,7 @@ export async function POST(request: Request) {
   const textOnly = ["1", "true", "on", "yes"].includes(textOnlyRaw.toLowerCase());
   if (textOnly) {
     const pagesOnly: PageResult[] = parsedResponse.pages.map((page) => {
-      const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childName, traitsRaw);
+      const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay, traitsRaw);
       return {
         idx: page.idx,
         text: cleanedRightText,
@@ -865,10 +927,19 @@ export async function POST(request: Request) {
   // リクエスト単位でエンジン優先度を上書きできる（例: /api/gehon?engine=preview）
   const engineOverride = (url.searchParams.get("engine") || "").toLowerCase() as EngineName | "";
   const imagePrimary: EngineName = (engineOverride || (IMAGE_PRIMARY as EngineName)) as EngineName;
+  const ttsEnabledRaw = url.searchParams.get("tts") || "";
+  const ttsEnabled = ["1","true","yes","on"].includes(ttsEnabledRaw.toLowerCase());
 
   // スタイル継承のため、ページ順に逐次生成（前ページ画像を参照として渡す）
   const finalPages: PageResult[] = [];
   let previousRawDataUrl: string | null = null;
+
+  // 主人公写真の初期参照（フォームで heroImage として受け取り）
+  const heroDataUrl = await fileToDataUrl(formData.get('heroImage') as unknown as File);
+  if (heroDataUrl) {
+    previousRawDataUrl = heroDataUrl;
+    if (debugFlag) console.log('[DEBUG] hero image attached as initial reference');
+  }
 
   for (const page of parsedResponse.pages) {
     const aspect = aspectRatioForPage(page.idx);
@@ -879,11 +950,11 @@ export async function POST(request: Request) {
       traitsRaw,
       page.left_image_desc,
     );
-    const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childName, traitsRaw);
+    const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay, traitsRaw);
     const illustrationPrompt = buildIllustrationPrompt(
       storyTitleForArt,
       cleanedDesc,
-      childName,
+      childNameDisplay,
       ageHint,
       traitsRaw,
     );
@@ -942,6 +1013,14 @@ export async function POST(request: Request) {
       text: cleanedRightText,
       imageDataUrl: imageUrl,
     };
+    if (ttsEnabled) {
+      try {
+        const audio = await synthesizeTts(cleanedRightText);
+        if (audio) result.audioDataUrl = audio;
+      } catch (e) {
+        console.warn(`[TTS] page=${page.idx} 音声生成に失敗`, e);
+      }
+    }
     if (debugFlag) {
       result.promptPreview = illustrationPrompt.slice(0, 160);
     }
@@ -979,9 +1058,14 @@ export async function PUT(request: Request) {
     const storyTitle = String(payload?.storyTitle || "昔話");
     const childName = String(payload?.childName || "たろう");
     const ageHint = String(payload?.ageHint || "6");
-    const traitsRaw = String(payload?.traitsRaw || "やさしい");
+  const traitsRaw = String(payload?.traitsRaw || "やさしい");
+  const honorificRaw = String(payload?.honorific || 'none');
+  const honorific = (['kun','chan','none'].includes(honorificRaw) ? honorificRaw : 'none') as 'kun'|'chan'|'none';
+  const childNameDisplay = displayNameWithHonorific(childName, honorific);
     const leftImageDescRaw = String(payload?.leftImageDesc || "やわらかな水彩の一場面");
-    const previousDataUrl = (typeof payload?.previousDataUrl === 'string') ? payload.previousDataUrl : null;
+  const previousDataUrlIn = (typeof payload?.previousDataUrl === 'string') ? payload.previousDataUrl : null;
+  const heroDataUrl = (typeof payload?.heroDataUrl === 'string') ? payload.heroDataUrl : null;
+  const previousDataUrl = previousDataUrlIn || heroDataUrl;
     const previousPromptRaw = (typeof payload?.previousPrompt === 'string') ? payload.previousPrompt : '';
 
     const cleanedDesc = await rewriteImageDesc(
@@ -995,7 +1079,7 @@ export async function PUT(request: Request) {
     let illustrationPrompt = buildIllustrationPrompt(
       storyTitle,
       cleanedDesc,
-      childName,
+      childNameDisplay,
       ageHint,
       traitsRaw,
     );
