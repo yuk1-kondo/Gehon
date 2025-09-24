@@ -20,11 +20,21 @@ export default function SummaryPage() {
   const [data, setData] = useState<StoryPayload | null>(null);
   const [ttsLoading, setTtsLoading] = useState(false);
   const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null);
+  const [showFurigana, setShowFurigana] = useState(false);
+  const [rubyHtmlMap, setRubyHtmlMap] = useState<Record<number, string>>({});
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem("gehon_story");
-      if (raw) setData(JSON.parse(raw));
+      if (raw) {
+        setData(JSON.parse(raw));
+        return;
+      }
+      // フォールバック: sessionStorage からの読み込み
+      try {
+        const raw2 = sessionStorage.getItem("gehon_story");
+        if (raw2) setData(JSON.parse(raw2));
+      } catch {}
     } catch {}
   }, []);
 
@@ -47,6 +57,37 @@ export default function SummaryPage() {
           <div className="text-gray-600">題材: {data.storyTitle} ／ 主人公: {displayName}</div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            className="px-4 py-2 bg-sky-600 text-white rounded"
+            onClick={async () => {
+              if (!data) return;
+              setShowFurigana((v) => !v);
+              // 初回ON時にまとめて生成
+              if (Object.keys(rubyHtmlMap).length === 0) {
+                const entries = await Promise.all(
+                  data.pages.map(async (p) => {
+                    try {
+                      const resp = await fetch('/api/furigana', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: p.text, to: 'hiragana', mode: 'furigana' }),
+                      });
+                      if (!resp.ok) throw new Error('furigana failed');
+                      const j = await resp.json();
+                      return [p.idx, String(j.html || '')] as const;
+                    } catch {
+                      return [p.idx, ''] as const;
+                    }
+                  })
+                );
+                const map: Record<number, string> = {};
+                for (const [idx, html] of entries) map[idx] = html;
+                setRubyHtmlMap(map);
+              }
+            }}
+          >
+            {showFurigana ? 'ふりがな非表示' : 'ふりがな表示'}
+          </button>
           <button
             className="px-4 py-2 bg-emerald-600 text-white rounded disabled:bg-gray-400"
             disabled={ttsLoading}
@@ -99,11 +140,19 @@ export default function SummaryPage() {
         {data.pages.map((p) => (
           <article key={p.idx} className="break-inside-avoid print:break-inside-avoid border rounded-md p-4">
             <div className="text-sm text-gray-500 mb-2">P{p.idx}</div>
-            {p.imageDataUrl && (
+            {p.imageDataUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={p.imageDataUrl} alt={`P${p.idx}`} className="w-full max-h-[480px] object-contain mb-3" />
+            ) : (
+              <div className="mb-3 text-sm text-amber-600 print:hidden">
+                画像が保存されていないため、このページのPDFには画像が含まれません。
+              </div>
             )}
-            <div className="whitespace-pre-wrap text-lg leading-relaxed">{p.text}</div>
+            {showFurigana && rubyHtmlMap[p.idx] ? (
+              <div className="text-lg leading-relaxed" dangerouslySetInnerHTML={{ __html: rubyHtmlMap[p.idx] }} />
+            ) : (
+              <div className="whitespace-pre-wrap text-lg leading-relaxed">{p.text}</div>
+            )}
           </article>
         ))}
       </section>

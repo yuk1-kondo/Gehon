@@ -437,8 +437,25 @@ export default function Home() {
                       const childName = (document.getElementById('name') as HTMLInputElement)?.value || '';
                       const selectedStory = storyOptions.find(o => o.id === selectedStoryId);
                       const storyTitle = selectedStoryId === 'custom' ? 'オリジナル' : (selectedStory?.name || '昔話');
-                      const payload = { storyTitle, honorific, childName, pages };
-                      try { localStorage.setItem('gehon_story', JSON.stringify(payload)); } catch {}
+                      // localStorage容量対策: 画像のdata URLは非常に大きいため、HTTP(S)のURLのみ保存する
+                      const slimPages = pages.map(p => ({
+                        idx: p.idx,
+                        text: p.text,
+                        imageDataUrl: (p.imageDataUrl && /^https?:\/\//.test(p.imageDataUrl)) ? p.imageDataUrl : ''
+                      }));
+                      const payload = { storyTitle, honorific, childName, pages: slimPages };
+                      try {
+                        localStorage.setItem('gehon_story', JSON.stringify(payload));
+                        try { sessionStorage.setItem('gehon_story', JSON.stringify(payload)); } catch {}
+                      } catch (e) {
+                        // それでも保存できない場合は、さらに縮小したデータで再保存を試みる
+                        try {
+                          const minimal = { storyTitle, honorific, childName, pages: slimPages.map(p => ({ idx: p.idx, text: p.text, imageDataUrl: '' })) };
+                          localStorage.setItem('gehon_story', JSON.stringify(minimal));
+                          try { sessionStorage.setItem('gehon_story', JSON.stringify(minimal)); } catch {}
+                          alert('保存容量の上限により、一部画像はPDFに含まれません。サマリーページでテキストのみ出力されます。');
+                        } catch {}
+                      }
                       router.push('/summary');
                     }}
                   >
