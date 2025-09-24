@@ -173,13 +173,13 @@ const parseDataUrl = (
 // --- 画像類似度: aHash(8x8, grayscale) の簡易実装 --------------------------
 // 依存を抑えるため、PNG/JPEG の最小限デコードに失敗したら null を返す。
 // Cloud Run ランタイム負荷を避けるため 64px までに縮小して平均輝度でハッシュ。
-import type { NextConfig } from "next"; // keep ESM happy in Next.js edge/server
+// (removed unused NextConfig import)
 let decodePng: ((buf: Buffer) => { width: number; height: number; data: Uint8Array }) | null = null;
 let decodeJpeg: ((buf: Buffer) => { width: number; height: number; data: Uint8Array }) | null = null;
 
 try {
   // 可能なら動的 import（ビルド時に存在しない場合でも実行時に解決されればOK）
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pngjs = require("pngjs");
   decodePng = (buf: Buffer) => {
     const PNG = pngjs.PNG;
@@ -189,7 +189,7 @@ try {
 } catch {}
 
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const jpeg = require("jpeg-js");
   decodeJpeg = (buf: Buffer) => {
     const out = jpeg.decode(buf, { useTArray: true, maxMemoryUsageInMB: 32 });
@@ -584,7 +584,7 @@ const sanitizeImageDesc = (s: string) => {
 };
 
 // 物語本文のサニタイズ（ブランド/英数字/現代ガジェット語を排除）
-const sanitizeRightTextJa = (s: string, childNameDisplay: string) => {
+const sanitizeRightTextJa = (s: string, _childNameDisplay: string) => {
   let t = s;
   // 連続英数字・型番風を除去
   t = t.replace(/[A-Za-z0-9#_\-]{2,}/g, "");
@@ -594,10 +594,6 @@ const sanitizeRightTextJa = (s: string, childNameDisplay: string) => {
   t = t.replace(/[©®™]/g, "");
   // 空白整理
   t = t.replace(/\s+/g, " ").replace(/\s*、\s*/g, "、").trim();
-  // 子どもの名前が一度も登場しない場合は軽く追記
-  if (childNameDisplay && !t.includes(childNameDisplay)) {
-    t += ` ${childNameDisplay}は物語の中で大切な役割を担います。`;
-  }
   return t;
 };
 
@@ -846,8 +842,8 @@ export async function POST(request: Request) {
     const honorificRaw = (formData.get("honorific") as string | null)?.toString() || "none";
     const honorific = (['kun','chan','none'].includes(honorificRaw) ? honorificRaw : 'none') as 'kun'|'chan'|'none';
     const childNameDisplay = displayNameWithHonorific(childName, honorific);
-  const ageHint = (formData.get("ageHint") as string) || ""; // 廃止（互換のため受理はするが未使用）
-  const traitsRaw = (formData.get("traits_raw") as string) || ""; // 廃止（互換のため受理はするが未使用）
+  const _ageHint = (formData.get("ageHint") as string) || ""; // 廃止（互換のため受理はするが未使用）
+  const _traitsRaw = (formData.get("traits_raw") as string) || ""; // 廃止（互換のため受理はするが未使用）
     const storyId = formData.get("storyId") as string;
     const customStory = (formData.get("customStory") as string | null)?.trim() ?? "";
 
@@ -970,27 +966,75 @@ export async function POST(request: Request) {
       console.log(illustrationPrompt.slice(0, 500));
     }
 
-    const illustration = await generateIllustration(
-      illustrationPrompt,
-      aspect,
-      imagePrimary,
-      previousRawDataUrl,
-    );
+    // 3候補生成（1ページ目はヒーロー参照、以降は前ページ参照）
+    const results: { url: string | null; engine: EngineName | 'fallback' }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const out = await generateIllustration(illustrationPrompt, aspect, imagePrimary, previousRawDataUrl);
+      results.push({ url: out.dataUrl, engine: out.engine });
+    }
+
+    // 参照があれば aHash で最良を選択
+    const pickBest = () => {
+      if (!previousRawDataUrl) return { url: results.find(r => r.url)?.url || null, engine: results.find(r => r.url)?.engine };
+      const prevMatch = previousRawDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      const prevMime = prevMatch?.[1] || "";
+      const prevB64 = prevMatch?.[2] || "";
+      if (!prevB64) return { url: results.find(r => r.url)?.url || null, engine: results.find(r => r.url)?.engine };
+
+      const prevHash = toGrayscaleAHash64(prevMime, prevB64);
+      if (prevHash) {
+        let bestIdx = -1;
+        let bestDist = Number.POSITIVE_INFINITY;
+        results.forEach((r, i) => {
+          const m = r.url?.match(/^data:([^;]+);base64,(.+)$/);
+          const mime = m?.[1] || "";
+          const b64 = m?.[2] || "";
+          if (!b64) return;
+          const h = toGrayscaleAHash64(mime, b64);
+          if (!h) return;
+          const d = hammingDistance(prevHash, h);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        });
+        if (bestIdx >= 0) return { url: results[bestIdx].url || null, engine: results[bestIdx].engine };
+      }
+      // フォールバック: 旧ヒューリスティック
+      let best: { idx: number; score: number } = { idx: -1, score: -1 };
+      results.forEach((r, i) => {
+        const m = r.url?.match(/^data:[^;]+;base64,(.+)$/);
+        const b64 = m ? m[1] : "";
+        if (!b64) return;
+        const prevTail = previousRawDataUrl ? (previousRawDataUrl.split(",")[1] || "") : "";
+        const lenScore = prevTail ? (1 - Math.abs(b64.length - prevTail.length) / Math.max(b64.length, prevTail.length)) : 0;
+        const headPrev = prevTail.slice(0, 256);
+        const headCur = b64.slice(0, 256);
+        let same = 0;
+        for (let j = 0; j < Math.min(headPrev.length, headCur.length); j++) {
+          if (headPrev[j] === headCur[j]) same++;
+        }
+        const headScore = headPrev.length ? (same / Math.max(headPrev.length, headCur.length)) : 0;
+        const score = 0.6 * headScore + 0.4 * lenScore;
+        if (score > best.score) best = { idx: i, score };
+      });
+      return best.idx >= 0 ? { url: results[best.idx].url || null, engine: results[best.idx].engine } : { url: results.find(r => r.url)?.url || null, engine: results.find(r => r.url)?.engine };
+    };
+
+    const picked = pickBest();
     if (debugFlag) {
       const hasRef = !!previousRawDataUrl;
-      console.log(`[ENGINE][page=${page.idx}] primary=${imagePrimary} used=${illustration.engine} returned=${illustration.dataUrl ? (illustration.dataUrl.startsWith('data:') ? 'data-url' : 'url') : 'fallback-svg'} refAttached=${hasRef}`);
+      console.log(`[ENGINE][page=${page.idx}] primary=${imagePrimary} pickedEngine=${picked.engine} refAttached=${hasRef}`);
     }
 
     // 次ページ参照用に、data URL のまま保持
-    previousRawDataUrl = illustration.dataUrl && illustration.dataUrl.startsWith("data:image/")
-      ? illustration.dataUrl
-      : null;
+    previousRawDataUrl = picked.url && picked.url.startsWith("data:image/") ? picked.url : null;
 
     // 可能なら GCS に保存して公開URLを返す（失敗時は data URL を返す）
-    let imageUrl = illustration.dataUrl ?? generateSvgPlaceholder(page.left_image_desc);
-    if (storage && IMAGE_BUCKET && illustration.dataUrl && illustration.dataUrl.startsWith("data:image/")) {
+    let imageUrl = picked.url ?? generateSvgPlaceholder(page.left_image_desc);
+    if (storage && IMAGE_BUCKET && picked.url && picked.url.startsWith("data:image/")) {
       try {
-        const match = illustration.dataUrl.match(/^data:(.+);base64,(.+)$/);
+        const match = picked.url.match(/^data:(.+);base64,(.+)$/);
         if (match) {
           const mime = match[1];
           const b64 = match[2];
@@ -1032,7 +1076,7 @@ export async function POST(request: Request) {
       result.promptPreview = illustrationPrompt.slice(0, 160);
     }
     result.promptFull = illustrationPrompt;
-    result.engine = illustration.engine;
+  result.engine = picked.engine;
     finalPages.push(result);
   }
 
@@ -1064,8 +1108,8 @@ export async function PUT(request: Request) {
     const idx = Number(payload?.idx || 1);
     const storyTitle = String(payload?.storyTitle || "昔話");
     const childName = String(payload?.childName || "たろう");
-    const ageHint = String(payload?.ageHint || "6");
-  const traitsRaw = String(payload?.traitsRaw || "やさしい");
+    const _ageHint = String(payload?.ageHint || "6");
+  const _traitsRaw = String(payload?.traitsRaw || "やさしい");
   const honorificRaw = String(payload?.honorific || 'none');
   const honorific = (['kun','chan','none'].includes(honorificRaw) ? honorificRaw : 'none') as 'kun'|'chan'|'none';
   const childNameDisplay = displayNameWithHonorific(childName, honorific);

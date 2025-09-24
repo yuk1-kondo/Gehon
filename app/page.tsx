@@ -1,7 +1,8 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 // Define the structure of a page
 interface Page {
@@ -37,6 +38,7 @@ const storyOptions: StoryOption[] = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [pages, setPages] = useState<Page[]>([]);
   const [error, setError] = useState<ErrorState | null>(null);
@@ -47,6 +49,10 @@ export default function Home() {
   const [honorific, setHonorific] = useState<'kun' | 'chan' | 'none'>('none');
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
   const [heroDataUrl, setHeroDataUrl] = useState<string | null>(null);
+  const [showPrompt, setShowPrompt] = useState<boolean>(false);
+
+  // 全ページ画像が揃ったか
+  const allImagesReady = useMemo(() => pages.length > 0 && pages.every(p => !!p.imageDataUrl), [pages]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -84,7 +90,48 @@ export default function Home() {
 
       const resultPages: Page[] = await response.json();
       setPages(resultPages);
-  setCurrentIndex(0);
+      setCurrentIndex(0);
+
+      // 1枚目の画像を自動生成（3候補→ヒーロー写真と比較して最適選択）
+      if (resultPages.length > 0) {
+        setGenerating(true);
+        try {
+          const selectedStory = storyOptions.find(o => o.id === selectedStoryId);
+          const storyTitle = selectedStoryId === 'custom' ? 'オリジナル' : (selectedStory?.name || '昔話');
+          const body = {
+            idx: resultPages[0].idx,
+            storyTitle,
+            childName: (document.getElementById('name') as HTMLInputElement)?.value || '',
+            leftImageDesc: resultPages[0].leftImageDesc || '',
+            rightText: resultPages[0].text || '',
+            previousDataUrl: null as string | null,
+            heroDataUrl, // 初期参照として使用
+            honorific,
+            previousPrompt: '',
+          };
+          const res = await fetch('/api/gehon', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || '1ページ目の画像生成に失敗しました');
+          }
+          const step = await res.json();
+          setPages((prev) => {
+            const updated = [...prev];
+            if (updated[0]) {
+              updated[0] = { ...updated[0], imageDataUrl: step.imageDataUrl, promptFull: step.promptFull };
+            }
+            return updated;
+          });
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setGenerating(false);
+        }
+      }
     } catch (err: unknown) {
       if (err instanceof Error) {
         const cause = err.cause;
@@ -253,6 +300,12 @@ export default function Home() {
               <div className="text-sm text-gray-500">{currentIndex + 1} / {pages.length}</div>
               <div className="space-x-2">
                 <button
+                  className="px-3 py-2 rounded bg-gray-100 text-gray-800 border"
+                  onClick={() => setShowPrompt(v => !v)}
+                >
+                  {showPrompt ? 'プロンプトを隠す' : 'プロンプトを表示'}
+                </button>
+                <button
                   className="px-4 py-2 rounded bg-blue-500 text-white disabled:bg-gray-400"
                   disabled={generating}
                   onClick={async () => {
@@ -301,7 +354,7 @@ export default function Home() {
                     }
                   }}
                 >
-                  このページの画像を生成
+                  このページの画像を再生成
                 </button>
                 <button
                   className="px-4 py-2 rounded bg-green-600 text-white disabled:bg-gray-400"
@@ -377,9 +430,24 @@ export default function Home() {
                 >
                   前のページへ
                 </button>
+                {allImagesReady && (
+                  <button
+                    className="px-4 py-2 rounded bg-purple-600 text-white"
+                    onClick={() => {
+                      const childName = (document.getElementById('name') as HTMLInputElement)?.value || '';
+                      const selectedStory = storyOptions.find(o => o.id === selectedStoryId);
+                      const storyTitle = selectedStoryId === 'custom' ? 'オリジナル' : (selectedStory?.name || '昔話');
+                      const payload = { storyTitle, honorific, childName, pages };
+                      try { localStorage.setItem('gehon_story', JSON.stringify(payload)); } catch {}
+                      router.push('/summary');
+                    }}
+                  >
+                    完成・PDFへ
+                  </button>
+                )}
               </div>
             </div>
-            {pages[currentIndex]?.promptFull && (
+            {showPrompt && pages[currentIndex]?.promptFull && (
               <div className="p-4 border-t">
                 <div className="text-sm text-gray-500 mb-2">画像プロンプト（実際に送信）</div>
                 <pre className="text-xs text-gray-700 bg-gray-50 p-2 rounded-md whitespace-pre-wrap break-words max-h-[256px] overflow-auto">{pages[currentIndex].promptFull}</pre>
