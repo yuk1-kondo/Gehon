@@ -114,8 +114,6 @@ export default function Home() {
         <form onSubmit={handleSubmit}>
           {/* Form fields... same as before */}
           <div className="mb-4"><label htmlFor="name" className="block text-gray-700 font-bold mb-2">お子様の名前</label><input type="text" id="name" name="name" required className="w-full px-3 py-2 border rounded-lg" /></div>
-          <div className="mb-4"><label htmlFor="ageHint" className="block text-gray-700 font-bold mb-2">年齢 (3-9歳)</label><select id="ageHint" name="ageHint" required className="w-full px-3 py-2 border rounded-lg"><option value="3">3歳</option><option value="4">4歳</option><option value="5">5歳</option><option value="6">6歳</option><option value="7">7歳</option><option value="8">8歳</option><option value="9">9歳</option></select></div>
-          <div className="mb-4"><label htmlFor="traits_raw" className="block text-gray-700 font-bold mb-2">性格・特徴</label><input type="text" id="traits_raw" name="traits_raw" placeholder="例：元気で、お絵描きが好き" required className="w-full px-3 py-2 border rounded-lg" /></div>
           <div className="mb-4">
             <label htmlFor="honorific" className="block text-gray-700 font-bold mb-2">呼び方（敬称）</label>
             <select
@@ -270,9 +268,8 @@ export default function Home() {
                         idx: pages[currentIndex].idx,
                         storyTitle,
                         childName: (document.getElementById('name') as HTMLInputElement)?.value || '',
-                        ageHint: (document.getElementById('ageHint') as HTMLSelectElement)?.value || '',
-                        traitsRaw: (document.getElementById('traits_raw') as HTMLInputElement)?.value || '',
                         leftImageDesc: pages[currentIndex].leftImageDesc || '',
+                        rightText: pages[currentIndex].text || '',
                         previousDataUrl,
                         heroDataUrl, // 前参照がなければ初期参照として活用
                         honorific,
@@ -338,9 +335,8 @@ export default function Home() {
                         idx: pages[nextIndex].idx,
                         storyTitle,
                         childName: (document.getElementById('name') as HTMLInputElement)?.value || '',
-                        ageHint: (document.getElementById('ageHint') as HTMLSelectElement)?.value || '',
-                        traitsRaw: (document.getElementById('traits_raw') as HTMLInputElement)?.value || '',
                         leftImageDesc: pages[nextIndex].leftImageDesc || '',
+                        rightText: pages[nextIndex].text || '',
                         previousDataUrl,
                         heroDataUrl,
                         honorific,

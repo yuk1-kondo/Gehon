@@ -293,8 +293,7 @@ const buildIllustrationPrompt = (
   storyTitle: string,
   pageDescription: string,
   childNameDisplay: string,
-  ageHint: string,
-  traitsRaw: string,
+  storyTextSnippet?: string,
 ) => {
   const paletteText = ART_DIRECTION.palette
     .map((p) => `${p.name}(${p.hex})`)
@@ -303,15 +302,17 @@ const buildIllustrationPrompt = (
   const compText = ART_DIRECTION.composition.join("、");
   const avoidText = ART_DIRECTION.avoid.join("、");
 
+  const storyGuide = storyTextSnippet ? `物語本文の要点: ${storyTextSnippet}\n` : "";
   return (
     `スタイル: ${ART_DIRECTION.styleTitle}。${styleText}。 children's book watercolor illustration, hand-drawn, soft brush.\n` +
     `和色パレット: ${paletteText} を基調。\n` +
     `画面構成: ${compText}。背景はやや抽象化し、塗りのにじみを活かす。\n` +
-  `主人公: 「${childNameDisplay}」。年齢目安: ${ageHint}歳。性格・特徴: ${traitsRaw}。` +
-    ` 毎ページで同一人物として描写し、髪型・服装・体型・配色を一貫させる。\n` +
-  `前提: 主人公は人間の子ども「${childNameDisplay}」。動物を主役にしない（動物は脇役にとどめる）。\n` +
+    `主人公: 「${childNameDisplay}」。毎ページで同一人物として描写し、髪型・服装・体型・配色を一貫させる。\n` +
+    `前提: 主人公は人間の子ども「${childNameDisplay}」。動物を主役にしない（動物は脇役にとどめる）。\n` +
     `物語の題材: 「${storyTitle}」の日本の昔話風解釈。\n` +
+    storyGuide +
     `ページの内容指示: ${pageDescription}。\n` +
+    `主人公「${childNameDisplay}」が場面の中心で何らかの役割や行動を担っている様子を明確に描写。\n` +
     `質感: 和紙の紙地に水彩で淡く着彩。手描きの筆致。描き込みは控えめ。\n` +
     `重要: これは写真ではなく、水彩の手描きイラストです。実写やカメラ/レンズ/被写界深度の表現は禁止。写実的な毛並みや肌質も禁止。\n` +
     `避けるべき表現: ${avoidText}（英数字や英語文字列、カメラ/レンズ用語、ブランド名・型番、現代ガジェットの描写を含めない）。\n` +
@@ -529,8 +530,6 @@ const aspectRatioForPage = (_idx: number): "1:1" | "3:4" => "3:4";
 const rewriteImageDesc = async (
   storyTitle: string,
   childName: string,
-  ageHint: string,
-  traitsRaw: string,
   originalDesc: string,
 ): Promise<string> => {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -545,7 +544,7 @@ const rewriteImageDesc = async (
       },
     ],
   };
-  const userText = `題材: ${storyTitle}\n主人公: ${childName}（${ageHint}歳, ${traitsRaw}）\n元の説明: ${originalDesc}\n出力条件: 1文/日本語/水彩絵本/昔話風/現代物・英数字・ブランド・カメラ用語なし`;
+  const userText = `題材: ${storyTitle}\n主人公: ${childName}\n元の説明: ${originalDesc}\n出力条件: 1文/日本語/水彩絵本/昔話風/現代物・英数字・ブランド・カメラ用語なし`;
 
   try {
     const body = {
@@ -585,7 +584,7 @@ const sanitizeImageDesc = (s: string) => {
 };
 
 // 物語本文のサニタイズ（ブランド/英数字/現代ガジェット語を排除）
-const sanitizeRightTextJa = (s: string, childNameDisplay: string, traitsRaw: string) => {
+const sanitizeRightTextJa = (s: string, childNameDisplay: string) => {
   let t = s;
   // 連続英数字・型番風を除去
   t = t.replace(/[A-Za-z0-9#_\-]{2,}/g, "");
@@ -597,7 +596,7 @@ const sanitizeRightTextJa = (s: string, childNameDisplay: string, traitsRaw: str
   t = t.replace(/\s+/g, " ").replace(/\s*、\s*/g, "、").trim();
   // 子どもの名前が一度も登場しない場合は軽く追記
   if (childNameDisplay && !t.includes(childNameDisplay)) {
-    t += ` ${childNameDisplay}は${traitsRaw || "やさしい心"}の持ち主です。`;
+    t += ` ${childNameDisplay}は物語の中で大切な役割を担います。`;
   }
   return t;
 };
@@ -847,12 +846,12 @@ export async function POST(request: Request) {
     const honorificRaw = (formData.get("honorific") as string | null)?.toString() || "none";
     const honorific = (['kun','chan','none'].includes(honorificRaw) ? honorificRaw : 'none') as 'kun'|'chan'|'none';
     const childNameDisplay = displayNameWithHonorific(childName, honorific);
-    const ageHint = formData.get("ageHint") as string;
-    const traitsRaw = formData.get("traits_raw") as string;
+  const ageHint = (formData.get("ageHint") as string) || ""; // 廃止（互換のため受理はするが未使用）
+  const traitsRaw = (formData.get("traits_raw") as string) || ""; // 廃止（互換のため受理はするが未使用）
     const storyId = formData.get("storyId") as string;
     const customStory = (formData.get("customStory") as string | null)?.trim() ?? "";
 
-    if (!childName || !ageHint || !storyId) {
+    if (!childName || !storyId) {
       return NextResponse.json({ error: "必須項目が入力されていません。" }, { status: 400 });
     }
 
@@ -871,7 +870,7 @@ export async function POST(request: Request) {
       storyInstruction = `元となる昔話のタイトル: ${storyDefinition.title}\nあらすじ: ${storyDefinition.summary}`;
     }
 
-    const prompt = `以下の条件を満たす日本語の絵本を作成してください。\n対象年齢: ${ageHint}歳\n主人公の名前: ${childName}\n主人公の性格・特徴: ${traitsRaw}\nストーリーの材料:\n${storyInstruction}\n子どもが共感できる温かい展開にし、恐怖や暴力的な描写は避けてください。`;
+  const prompt = `以下の条件を満たす日本語の絵本を作成してください。\n主人公の名前: ${childName}\nストーリーの材料:\n${storyInstruction}\n各ページで主人公が具体的な役割や行動を担うようにしてください。子どもが共感できる温かい展開にし、恐怖や暴力的な描写は避けてください。`;
 
     let attempt = 0;
     let parsedResponse: { pages: AIPage[] } | null = null;
@@ -901,7 +900,7 @@ export async function POST(request: Request) {
     }
 
     const deterministicSeedBase =
-      hashString(`${childName}|${ageHint}|${traitsRaw}|${storyId}|${customStory}`) % 2147483647;
+      hashString(`${childName}|${storyId}|${customStory}`) % 2147483647;
 
     const storyTitleForArt =
       storyId === "custom" ? "オリジナル" : (STORY_LIBRARY[storyId]?.title ?? "昔話");
@@ -909,26 +908,36 @@ export async function POST(request: Request) {
     const storage = IMAGE_BUCKET ? new Storage() : null;
 
   // textOnly=1 なら本文のみ返す（画像生成スキップ）
+  const ttsEnabledRaw = url.searchParams.get("tts") || "";
+  const ttsEnabled = ["1","true","yes","on"].includes(ttsEnabledRaw.toLowerCase());
   const textOnlyRaw = url.searchParams.get("textOnly") || "";
   const textOnly = ["1", "true", "on", "yes"].includes(textOnlyRaw.toLowerCase());
   if (textOnly) {
-    const pagesOnly: PageResult[] = parsedResponse.pages.map((page) => {
-      const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay, traitsRaw);
-      return {
+    const pagesOnly: PageResult[] = [];
+    for (const page of parsedResponse.pages) {
+      const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay);
+      const item: PageResult = {
         idx: page.idx,
         text: cleanedRightText,
         imageDataUrl: "", // 後段のステップAPIで生成
         leftImageDesc: sanitizeImageDesc(page.left_image_desc),
       };
-    });
+      if (ttsEnabled) {
+        try {
+          const audio = await synthesizeTts(cleanedRightText);
+          if (audio) item.audioDataUrl = audio;
+        } catch (e) {
+          console.warn(`[TTS] textOnly page=${page.idx} 音声生成に失敗`, e);
+        }
+      }
+      pagesOnly.push(item);
+    }
     return NextResponse.json(pagesOnly);
   }
 
   // リクエスト単位でエンジン優先度を上書きできる（例: /api/gehon?engine=preview）
   const engineOverride = (url.searchParams.get("engine") || "").toLowerCase() as EngineName | "";
   const imagePrimary: EngineName = (engineOverride || (IMAGE_PRIMARY as EngineName)) as EngineName;
-  const ttsEnabledRaw = url.searchParams.get("tts") || "";
-  const ttsEnabled = ["1","true","yes","on"].includes(ttsEnabledRaw.toLowerCase());
 
   // スタイル継承のため、ページ順に逐次生成（前ページ画像を参照として渡す）
   const finalPages: PageResult[] = [];
@@ -946,17 +955,15 @@ export async function POST(request: Request) {
     const cleanedDesc = await rewriteImageDesc(
       storyTitleForArt,
       childName,
-      ageHint,
-      traitsRaw,
       page.left_image_desc,
     );
-    const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay, traitsRaw);
+    const cleanedRightText = sanitizeRightTextJa(page.right_text_ja, childNameDisplay);
+    const storySnippet = cleanedRightText.slice(0, 120);
     const illustrationPrompt = buildIllustrationPrompt(
       storyTitleForArt,
       cleanedDesc,
       childNameDisplay,
-      ageHint,
-      traitsRaw,
+      storySnippet,
     );
     if (debugFlag) {
       console.log(`[PROMPT][page=${page.idx}] aspect=${aspect} title=${storyTitleForArt}`);
@@ -1071,17 +1078,15 @@ export async function PUT(request: Request) {
     const cleanedDesc = await rewriteImageDesc(
       storyTitle,
       childName,
-      ageHint,
-      traitsRaw,
       leftImageDescRaw,
     );
     const aspect = aspectRatioForPage(idx);
+    const storySnippet = (typeof payload?.rightText === 'string' ? payload.rightText : '').slice(0, 120);
     let illustrationPrompt = buildIllustrationPrompt(
       storyTitle,
       cleanedDesc,
       childNameDisplay,
-      ageHint,
-      traitsRaw,
+      storySnippet,
     );
     // 参考として前ページのプロンプト要点を短く加える（長すぎると品質に影響するため簡潔に）
     if (previousPromptRaw) {
